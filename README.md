@@ -139,10 +139,11 @@ change left behind. Read it if you want to know why the code looks the way it do
 ## Verified
 
 - `tsc --noEmit` over the whole patched pi-blackhole source: clean.
-- ripwire `quality_delta` over the working tree: `gating=1` — the two swallowed errors on the gauge
+- ripwire `quality_delta` over the change's two files: `gating=1` — the two swallowed errors on the gauge
   cache write path in `handleGauges`, deliberate because the browser already received the frame and
   the server entry has no logging facility; the `minor` findings are the cached-reading branch in
-  `renderStatusPanel`. ripwire `--test-gate`: `changed=3 impacted=0 tests=0 untested=0` — the
+  `renderStatusPanel`. (The verb compares the tree against its commit, so it reads clean once
+  committed — run it before the commit.) ripwire `--test-gate`: `changed=3 impacted=0 tests=0 untested=0` — the
   repository carries no test corpus for the plugin, so the gate names nothing to run.
 - End-to-end against a live pi-web host: the settings round trip returned 33 fields
   with provenance, the gauges channel returned a live frame, a saved write was
