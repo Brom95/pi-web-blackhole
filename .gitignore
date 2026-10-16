@@ -1,0 +1,5 @@
+node_modules/
+.ripwire*
+.pi/tasks/
+*.output
+.pi-web/

@@ -1,0 +1,242 @@
+diff --git a/index.ts b/index.ts
+index 6097521..9d4923c 100644
+--- a/index.ts
++++ b/index.ts
+@@ -19,6 +19,7 @@ import { registerBlackholeExportCommand } from "./src/commands/blackhole-export"
+ import { registerConsolidationTrigger } from "./src/om/consolidation.js";
+ import { registerCompactionTrigger } from "./src/om/compaction-trigger.js";
+ import { registerStatusBar } from "./src/om/status-bar.js";
++import { registerWebBridge } from "./src/om/web-bridge.js";
+ import { registerRecallTool } from "./src/tools/recall";
+ import { Runtime } from "./src/om/runtime.js";
+ import { captureRegisteredProviderStreams } from "./src/om/provider-stream.js";
+@@ -83,6 +84,7 @@ export default async (pi: ExtensionAPI) => {
+   registerConsolidationTrigger(pi, omRuntime); // agent_start + turn_end → observer/reflector/dropper
+   registerCompactionTrigger(pi, omRuntime); // turn_end + agent_end → auto-compaction
+   registerStatusBar(pi, omRuntime); // footer gauges (O/P/X) + worker events (config.statusBar)
++  registerWebBridge(pi); // answers the pi-web panel's settings frames (no LLM message)
+ 
+   // Pi-vcc: compaction + om injection
+   registerBeforeCompactHook(pi, omRuntime); // session_before_compact → pi-vcc + om content
+diff --git a/src/om/status-bar.ts b/src/om/status-bar.ts
+index dadc8cf..ad86e97 100644
+--- a/src/om/status-bar.ts
++++ b/src/om/status-bar.ts
+@@ -250,6 +250,34 @@ export function registerStatusBar(pi: ExtensionAPI, runtime: Runtime): void {
+     return ctx?.sessionManager?.getBranch?.() ?? [];
+   }
+ 
++  /** Publish the gauge state the footer just measured, for the pi-web panel.
++   *  Read-only w.r.t. the bar: it changes nothing about what renders or when. */
++  function publishGauges(): void {
++    const cfg = runtime.config;
++    if (cfg.statusBar === false) return;
++    const memoryOn = cfg.memory !== false;
++    pi.events.emit(
++      "pi-blackhole:gauges",
++      {
++        obsSince: gauges.obsSince,
++        pool: gauges.pool,
++        ctxTokens: gauges.ctxTokens,
++        observeAfterTokens: cfg.observeAfterTokens,
++        observationsPoolMaxTokens: cfg.observationsPoolMaxTokens,
++        compactThreshold: autoCompactThreshold(cfg, model),
++        memoryOn,
++        // WorkerState is a discriminated union: a running worker carries no
++        // delta or note, so narrow before reading them.
++        workers: workers.map((w) => ({
++          type: w.type,
++          kind: w.state.kind,
++          delta: w.state.kind === "done" ? w.state.delta : undefined,
++          note: w.state.kind === "done" ? w.state.note : undefined,
++        })),
++      },
++    );
++  }
++
+   function recompute(ctx: BranchCtx): void {
+     let entries: Entry[];
+     try {
+@@ -281,6 +309,8 @@ export function registerStatusBar(pi: ExtensionAPI, runtime: Runtime): void {
+       dropped: folded.droppedObservationIds.size,
+     });
+     render();
++    // Same measured state the footer drew, published for the pi-web panel.
++    publishGauges();
+   }
+ 
+   /** Spinner tick: re-read the ledger only when branch or runtime state moved. */
+@@ -327,12 +357,10 @@ export function registerStatusBar(pi: ExtensionAPI, runtime: Runtime): void {
+     model = ctx.model;
+     lastCtx = ctx as BranchCtx;
+     clearWorkers();
+-    if (!ui) return;
++    // A hosted pi-web session has no TUI to draw into, but the gauges are still
++    // measured and published for the web panel, so the measurement runs either
++    // way; render() is the part that needs a UI and it self-guards.
+     recompute(ctx as BranchCtx);
+-    // The pipeline can launch after this module's event handlers ran (handler
+-    // order inside one event is not a guarantee we own), and an idle session
+-    // emits no events for minutes. Poll runtime state independently of events
+-    // so no run is missed. tick() is cheap when nothing moved.
+     if (!idlePollTimer) {
+       idlePollTimer = setInterval(tick, IDLE_POLL_MS);
+       idlePollTimer.unref?.();
+@@ -340,7 +368,6 @@ export function registerStatusBar(pi: ExtensionAPI, runtime: Runtime): void {
+   });
+ 
+   pi.on("agent_end", (_event, ctx) => {
+-    if (!ui) return;
+     model = ctx.model ?? model;
+     lastCtx = ctx as BranchCtx;
+     recompute(ctx as BranchCtx);
+@@ -350,20 +377,17 @@ export function registerStatusBar(pi: ExtensionAPI, runtime: Runtime): void {
+   // where a run becomes observable. Without these handlers the spinner can
+   // only ever start at agent_end, by which time the pipeline is usually done.
+   pi.on("agent_start", (_event, ctx) => {
+-    if (!ui) return;
+     model = ctx.model ?? model;
+     lastCtx = ctx as BranchCtx;
+     recompute(ctx as BranchCtx);
+   });
+ 
+   pi.on("turn_end", (_event, ctx) => {
+-    if (!ui) return;
+     lastCtx = ctx as BranchCtx;
+     recompute(ctx as BranchCtx);
+   });
+ 
+   pi.on("session_compact", (event, ctx) => {
+-    if (!ui) return;
+     lastCtx = ctx as BranchCtx;
+     const w: WorkerEntry = { type: "compact", state: { kind: "done", note: String(event.reason) } };
+     workers.push(w);
+diff --git a/src/om/web-bridge.ts b/src/om/web-bridge.ts
+new file mode 100644
+index 0000000..3722c70
+--- /dev/null
++++ b/src/om/web-bridge.ts
+@@ -0,0 +1,106 @@
++/**
++ * pi-web settings bridge — the other half of the pi-blackhole-web plugin.
++ *
++ * The browser panel asks the pi-web server entry, which forwards here over the
++ * hosted session's Pi event bus. Everything this answers comes from pi-blackhole's
++ * own ConfigManager singleton: `getFields` is the schema the terminal modal already
++ * draws, `load` is the merged value set, `inspect().winners` says which scope set
++ * each key, and `save` is the same validated write the modal performs. Nothing here
++ * restates a field, a range, or a config path, so the web panel cannot drift from the
++ * terminal settings surface.
++ *
++ * Opening the panel sends no message to the LLM: this only answers on the bus.
++ */
++import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
++
++const REQUEST_CHANNEL = "pi-blackhole-web:settings";
++const REPLY_CHANNEL = "pi-blackhole-web:settings-reply";
++
++/** Field and UnifiedConfig are structural types this module deliberately does
++ *  not restate; the bridge reads them through their plain-object shape. */
++function asRecord(value: unknown): Record<string, unknown> {
++  return value as Record<string, unknown>;
++}
++
++/** Plain-JSON view of one schema field. Field objects carry methods and
++ *  defaults that must not cross the bus, so the shape is declared here. */
++function projectField(field: unknown): Record<string, unknown> {
++  const source = asRecord(field);
++  const projected: Record<string, unknown> = {
++    key: source.key,
++    label: source.label,
++    type: source.type,
++    value: source.value,
++  };
++  for (const optional of ["options", "min", "max", "step", "description", "readonly"]) {
++    if (source[optional] !== undefined) projected[optional] = source[optional];
++  }
++  return projected;
++}
++
++/** HTML form controls hand back strings; the schema says how to read each one. */
++function coerceToSchema(field: unknown, raw: unknown): unknown {
++  const type = asRecord(field).type;
++  if (type === "boolean") return raw === true || raw === "true";
++  if (type === "number") return Number(raw);
++  return String(raw);
++}
++
++async function handle(pi: ExtensionAPI, frame: unknown): Promise<void> {
++  const request = asRecord(frame ?? {});
++  try {
++    const { config, GLOBAL_CONFIG_DIR } = await import("../pi-base/blackhole-settings.js");
++    const cwd = typeof request.cwd === "string" ? request.cwd : process.cwd();
++    const scope =
++      request.scope === "project" || request.scope === "session"
++        ? (request.scope as "project" | "session")
++        : "global";
++    const loaded = config.load(cwd, GLOBAL_CONFIG_DIR);
++
++    if (request.action === "set") {
++      const fields = config.getFields(loaded);
++      const byKey = new Map(fields.map((field) => [asRecord(field).key, field]));
++      const merged = { ...loaded };
++      const changes = Array.from((request.changes as unknown[]) || []);
++      const { validateFieldValue } = await import("../pi-base/settings/validate-field.js");
++      for (const change of changes) {
++        const entry = asRecord(change ?? {});
++        const field = byKey.get(entry.key);
++        // Unknown keys are refused, not silently dropped: a stale panel must not
++        // invent a config key.
++        if (!field) throw new Error(`unknown setting: ${String(entry.key)}`);
++        const value = coerceToSchema(field, entry.value);
++        // pi-blackhole's own validator supplies the refusal reason, shown
++        // verbatim: ConfigManager.save skips an invalid value silently, so the
++        // reason is surfaced here rather than restated by this bridge.
++        const warning = validateFieldValue(field, value);
++        if (warning) throw new Error(warning);
++        asRecord(merged)[String(entry.key)] = value;
++      }
++      // ConfigManager.save runs the same validation the terminal modal uses and
++      // throws with a human-readable reason, which the panel shows verbatim.
++      config.save(merged, scope, cwd, GLOBAL_CONFIG_DIR);
++    }
++
++    const current = config.load(cwd, GLOBAL_CONFIG_DIR);
++    const inspection = config.inspect(cwd, GLOBAL_CONFIG_DIR);
++    pi.events.emit(
++      REPLY_CHANNEL,
++      {
++        fields: config.getFields(current).map(projectField),
++        values: current,
++        winners: inspection.winners,
++        scopes: config.getScopes(),
++      },
++    );
++  } catch (error) {
++    // A failed write still replies, so the panel can show why it was refused.
++    pi.events.emit(REPLY_CHANNEL, { error: String(error) });
++  }
++}
++
++export function registerWebBridge(pi: ExtensionAPI): void {
++  pi.events.on(REQUEST_CHANNEL, (frame) => {
++    void handle(pi, frame);
++  });
++}
+diff --git a/src/pi-base/config-manager.ts b/src/pi-base/config-manager.ts
+index 5b523f3..8c88ac8 100644
+--- a/src/pi-base/config-manager.ts
++++ b/src/pi-base/config-manager.ts
+@@ -162,6 +162,12 @@ export class ConfigManager<T extends object> {
+     };
+   }
+ 
++  /** Schema fields for a config snapshot. Public accessor for external UIs
++   *  (the pi-web panel); the modal keeps building fields through openSettings. */
++  getFields(values: T): Field[] {
++    return this.opts.fields(values);
++  }
++
+   /** True when session config scope is available (persisted or pending). */
+   hasSession(): boolean {
+     return this._sessionPersist === "persisted" || this._sessionPersist === "pending";

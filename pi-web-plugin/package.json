@@ -1,0 +1,28 @@
+{
+  "name": "pi-blackhole-web",
+  "version": "0.1.0",
+  "description": "pi-blackhole settings and O/P/X gauges as a PI WEB panel. Schema, validation and saving are pi-blackhole's own; the panel never hardcodes them.",
+  "type": "module",
+  "keywords": [
+    "pi-package"
+  ],
+  "files": [
+    "src",
+    "test"
+  ],
+  "piWeb": {
+    "plugins": [
+      {
+        "id": "pi-blackhole-web",
+        "defaultEnabled": true,
+        "browserRoot": "src/browser",
+        "module": "src/browser/index.js",
+        "serverModule": "src/server.js",
+        "machineSpecific": true
+      }
+    ]
+  },
+  "pi": {
+    "extensions": []
+  }
+}

@@ -1,0 +1,3 @@
+[submodule "vendor/pi-blackhole"]
+	path = vendor/pi-blackhole
+	url = https://github.com/k0valik/pi-blackhole
