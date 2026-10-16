@@ -69,19 +69,21 @@ should read installed, enabled, compatible, active. A `stale` or
 restart the daemon, then reload the browser. The first request after a restart can
 return a `stale-plugin-revision` refusal until the page has reloaded; retry once.
 
-### Optional: the pinned source copy
+### Hacking on the bridge
 
 Only needed if you are working on pi-blackhole's source, not if you are using the
-plugin:
+plugin. This repository ships no copy of pi-blackhole — fetch one where you want it:
 
 ```sh
-git submodule update --init vendor/pi-blackhole
-./scripts/bridge.sh apply   # bridge onto the currently pinned pi-blackhole
-./scripts/bridge.sh bump    # fetch upstream HEAD, re-pin, re-apply
+git clone https://github.com/k0valik/pi-blackhole.git vendor/pi-blackhole
+./scripts/bridge.sh apply   # bridge onto the copy you just fetched
+./scripts/bridge.sh bump    # fetch upstream HEAD into that copy, then re-apply
 ```
 
-`bump` fails loudly when the patch no longer fits a moved upstream. The patch is
-derived against pi-blackhole `0.5.13`, commit `1907ede09`.
+`apply` refuses loudly when the patch no longer fits the copy it was handed, naming
+the commit that copy sits on. The published patch is derived against pi-blackhole
+`0.5.13`, upstream commit `1907ede09`; re-derive it before building against a moved
+upstream.
 
 ## Layout
 
@@ -89,9 +91,8 @@ derived against pi-blackhole `0.5.13`, commit `1907ede09`.
 pi-web-plugin/          browser API v4 / server API v3
   src/browser/index.js  the two workspace panels
   src/server.js         relays to pi-blackhole over the hosted session event bus
-vendor/pi-blackhole     the upstream plugin, pinned as a git submodule
-vendor/pi-blackhole-bridge.patch   the bridge applied onto that pinned copy
-scripts/bridge.sh       apply / bump: keeps the pinned copy and the bridge in step
+vendor/pi-blackhole-bridge.patch   the bridge, derived against pi-blackhole 0.5.13
+scripts/bridge.sh       apply / bump: patch a copy you fetched, refuse when it no longer fits
 openspec/               the change proposals, designs, and the spec
 .pi/                    the OpenSpec skills and prompts used while building this
 ```
@@ -116,8 +117,9 @@ respect to what pi-blackhole already renders:
 
 This repository is Apache-2.0 — see [`LICENSE`](LICENSE). The upstream
 [pi-blackhole](https://github.com/k0valik/pi-blackhole) it builds on is MIT-licensed
-(k0valik) and stays a submodule pointer, not a copy; `vendor/pi-blackhole-bridge.patch`
-is a modification of that MIT-licensed source and is attributed to it.
+(k0valik) and is not vendored here — the repository carries no copy of it, only the
+patch. `vendor/pi-blackhole-bridge.patch` is a modification of that MIT-licensed source,
+derived against `0.5.13` at commit `1907ede09`, and is attributed to it.
 
 ## The planning trail
 

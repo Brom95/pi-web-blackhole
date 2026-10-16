@@ -1,3 +1,6 @@
+# pi-blackhole web bridge — derived against pi-blackhole 0.5.13, upstream commit
+# 1907ede09b5f81922a149ff1622a42325b60b87e (k0valik/pi-blackhole).
+# Apply it with ./scripts/bridge.sh apply, which refuses when it no longer fits the copy.
 diff --git a/index.ts b/index.ts
 index 6097521..9d4923c 100644
 --- a/index.ts
