@@ -23,11 +23,20 @@ Two workspace tabs in pi-web, over the selected session:
 | Tab | Shows |
 | --- | --- |
 | **blackhole settings** | every pi-blackhole setting as a styled control — select, checkbox, number — with pi-blackhole's own label, description, current value, and the layer that won (global / project / session) |
-| **blackhole status** | the O/P/X gauges as live bars, what each bar measures and why it is at its current value, worker-stage rows, and compaction distance |
+| **blackhole status** | the O/P/X gauges as live bars — or, when nothing arrived for the page it is on, the last frame kept for that conversation, labelled as cached — plus what each bar measures and why it is at its current value, worker-stage rows, and compaction distance |
 
 The panel never restates a field, a range, or a config path. It asks pi-blackhole
 over the hosted session's event bus and renders what pi-blackhole answers, so the
 web surface cannot drift from the terminal settings surface.
+
+The status tab also keeps the last frame it received for each conversation, so a reload or a
+restart still shows a reading. The record lives in the session daemon's data directory
+(`<data>/gauge-cache/<conversation>.json`, outside the repository), one per conversation, bounded to
+the newest 24. Only a frame the session actually published writes a record — a failed or cancelled
+open writes nothing. A page with no frame of its own draws the kept frame under a `Cached reading`
+line naming its age and the conversation it belongs to, in a style distinct from a live reading; when
+a live frame arrives it replaces the cached one and the label disappears. A conversation with no
+record of its own shows no numbers from any other conversation.
 
 One setting needs a caveat: **Footer status bar** names a terminal surface. pi-web
 hands hosted sessions `hasUI: false`, so pi-blackhole's footer never draws in the
@@ -130,19 +139,30 @@ change left behind. Read it if you want to know why the code looks the way it do
 ## Verified
 
 - `tsc --noEmit` over the whole patched pi-blackhole source: clean.
-- ripwire `quality_delta`: `gating=0`; the `minor` findings are the bridge's own
-  additions. ripwire `--test-gate`: `changed=4 impacted=125 tests=45 untested=5`.
+- ripwire `quality_delta` over the working tree: `gating=1` — the two swallowed errors on the gauge
+  cache write path in `handleGauges`, deliberate because the browser already received the frame and
+  the server entry has no logging facility; the `minor` findings are the cached-reading branch in
+  `renderStatusPanel`. ripwire `--test-gate`: `changed=3 impacted=0 tests=0 untested=0` — the
+  repository carries no test corpus for the plugin, so the gate names nothing to run.
 - End-to-end against a live pi-web host: the settings round trip returned 33 fields
   with provenance, the gauges channel returned a live frame, a saved write was
   reflected in the reply, and the status panel drew the gauges and the off-state
   notice.
+- Gauge cache against a live pi-web host: the `cached` operation returned the record for the selected
+  conversation only, the gauge channel delivered a live frame, that frame rewrote the record file
+  under `gauge-cache/`, and a page whose channel had published nothing drew the cached bars with the
+  `Cached reading` line while a conversation with no record drew none.
 
 ## Not verified
 
 - The upstream vitest suite has never run here. The checked-out dependency set does
   not match the repo's source: installed `pi-codemode@1.2.0` contains no
   `MCP_TYPESCRIPT_PREAMBLE`, which pi-blackhole's own `src/om/tokens.ts` imports.
-  Fix the dependency set, then run the 45 test files the gate names.
+  Fix the dependency set, then run the suite where you fetched the copy — the repository carries no
+  upstream tree, so the gate names no tests here.
+- The gauge-cache panel was checked by driving the served module bytes over the live host's HTTP and
+  channel routes, not by looking at the rendered tab: the live page kept running the pre-edit browser
+  module until the plugin restarts, so nobody has seen the cached reading in a browser yet.
 - Saving through the panel rewrites pi-blackhole's config file and drops keys that
   live outside the panel surface (35 keys → 31 in one observed save). That is
   pi-blackhole's own save behaviour, not this plugin's, but it means a panel save is

@@ -12,6 +12,7 @@
 
 const SETTINGS_OP = "settings";
 const GAUGES_OP = "gauges";
+const CACHE_OP = "cached";
 
 // Panel state. Rendered synchronously from here; async fetches write into it.
 let fields = [];
@@ -32,6 +33,15 @@ let gaugeAbort;
 let gaugeStatus = "";
 let gaugeSession = "";
 let gaugeFrameAt = 0;
+
+// The last frame the server entry kept for the selected conversation. It is
+// consulted only when this page has no frame of its own, and it is never drawn
+// as live: the panel labels it, and the label disappears once a frame lands.
+let cachedFrame = null;
+let cachedAt = 0;
+let cachedSession = "";
+let cacheLoading = false;
+let cacheCheckedFor = "";
 
 // pi-blackhole owns this setting. The plugin reads only the value pi-blackhole
 // reports for it: the schema, the default, the validation and the save path all
@@ -56,13 +66,64 @@ function statusBarReadout() {
 function renderStatusOff(html, readout) {
   return html`
     <p class="pi-blackhole-off">
-      The status readout is off: pi-blackhole reports ${readout.label} as false, so the
-      O/P/X bars and the worker rows are not drawn here. Turn ${STATUS_BAR_KEY} back on in
-      the settings panel${readout.winner ? ` (pi-blackhole resolved it from ${readout.winner})` : ""}.
-      The gauge channel itself is unaffected — pi-blackhole still publishes frames while the
-      readout is off, which is why this panel says "off" rather than "no live session".
+      The readout is switched off: pi-blackhole reports ${STATUS_BAR_KEY} as false${readout.winner ? ` (resolved from ${readout.winner})` : ""}, so this tab draws no bars, no worker rows, and no cached numbers.
+      pi-blackhole names the switch ${readout.label} — that surface belongs to a terminal, and this interface has none; here the switch gates this tab instead.
+      The gauge channel itself is unaffected: pi-blackhole still publishes frames while the readout is off, which is why this tab says "off" rather than "no live session".
     </p>
   `;
+}
+
+function humanAge(seconds) {
+  if (seconds < 60) return `${seconds}s`;
+  if (seconds < 3600) return `${Math.round(seconds / 60)} min`;
+  if (seconds < 86400) {
+    const hours = Math.floor(seconds / 3600);
+    const mins = Math.round((seconds % 3600) / 60);
+    return mins ? `${hours}h ${mins}min` : `${hours}h`;
+  }
+  const days = Math.floor(seconds / 86400);
+  const hours = Math.round((seconds % 86400) / 3600);
+  return hours ? `${days}d ${hours}h` : `${days}d`;
+}
+
+// Ask the server entry for the frame it kept, but only when this page has no
+// frame for the selected conversation — including when the gauge channel closed
+// or failed. A page that already has a frame pays nothing here. The read is
+// asked at most once per conversation until a frame lands, so a conversation
+// with no record cannot re-request on every render.
+async function loadCachedGauges(panel) {
+  const sessionId = sessionIdOf(panel);
+  if (!sessionId || gauges || cacheLoading) return;
+  if (cacheCheckedFor === sessionId) return;
+  cacheCheckedFor = sessionId;
+  cacheLoading = true;
+  const peer = panel.peer;
+  const label = sessionLabel(panel);
+  try {
+    if (!peer || !peer.request) throw new Error("no package peer on this machine");
+    const result = await peer.request(CACHE_OP, { action: "get", sessionId });
+    const record = result && result.frame ? result : null;
+    // The record names the conversation it belongs to, and it must be the one
+    // selected here: numbers from another conversation are never drawn.
+    if (record && String(record.sessionId || "") === sessionId) {
+      cachedFrame = record.frame;
+      cachedAt = Number(record.at || 0);
+      cachedSession = label;
+    } else {
+      cachedFrame = null;
+      cachedAt = 0;
+      cachedSession = "";
+    }
+  } catch {
+    // A cache read that fails leaves the panel exactly as it is today.
+    cachedFrame = null;
+    cachedAt = 0;
+    cachedSession = "";
+  } finally {
+    cacheLoading = false;
+    // The fetch is async, so the panel must be re-rendered once it lands.
+    panel.host.requestRender();
+  }
 }
 
 function closeGaugeChannel() {
@@ -218,6 +279,15 @@ async function openGauges(panel) {
   panel.host.requestRender();
 }
 
+// What the status panel asks of the host on every draw and every invalidate:
+// the settings round trip, the cached-frame read, the gauge channel open. Each
+// of those guards itself, so calling all three again is cheap.
+const refreshStatus = (panel) => {
+  void loadSettings(panel);
+  void loadCachedGauges(panel);
+  openGaugesFor(panel);
+};
+
 // Stable ids so the apply handler can read what the user actually selected.
 function controlId(key) {
   return `pi-blackhole-${key}`;
@@ -324,6 +394,9 @@ function renderField(html, field) {
   const description = field.description
     ? html`<small class="pi-blackhole-desc">${field.description}</small>`
     : null;
+  const note = field.key === STATUS_BAR_KEY
+    ? html`<small class="pi-blackhole-desc">In this interface there is no terminal footer: the switch gates the numbers the status tab draws.</small>`
+    : null;
   let control;
   if (field.type === "enum") {
     const options = (field.options || []).map((option) => html`
@@ -345,6 +418,7 @@ function renderField(html, field) {
         <span class="pi-blackhole-name">${title}</span>
         ${control}
         ${description}
+        ${note}
       </div>
       <div class="pi-blackhole-current">
         <span class="pi-blackhole-value pi-blackhole-mono">${String(current ?? "")}</span>
@@ -422,31 +496,34 @@ function renderStatusStyles(html) {
       .viewer.pi-blackhole-status .pi-blackhole-done { color: var(--pi-success); }
       .viewer.pi-blackhole-status .pi-blackhole-empty { color: var(--pi-muted); }
       .viewer.pi-blackhole-status .pi-blackhole-off { color: var(--pi-warning); border: 1px solid var(--pi-warning-border); border-radius: 8px; padding: 8px 12px; }
+      .viewer.pi-blackhole-status .pi-blackhole-cached { color: var(--pi-muted); border: 1px dashed var(--pi-border-muted); border-radius: 8px; padding: 6px 10px; font-size: 0.9em; }
     </style>
   `;
 }
 
 function renderStatusPanel(html) {
   const readout = statusBarReadout();
-  const memoryOn = gauges && gauges.memoryOn !== false;
+  const fromCache = !gauges && !!cachedFrame;
+  const frame = gauges || cachedFrame;
+  const memoryOn = frame && frame.memoryOn !== false;
   const gaugeRows = [];
-  if (readout.on && gauges) {
+  if (readout.on && frame) {
     if (memoryOn) {
       gaugeRows.push(renderGauge(html, {
         title: "O",
         key: "obsSince",
         threshold: "observeAfterTokens",
         why: "Tokens of transcript the session has produced since pi-blackhole last ran its observer over them. The bar fills while the session talks; at the threshold the observer runs and the count restarts.",
-        value: gauges.obsSince,
-        max: gauges.observeAfterTokens,
+        value: frame.obsSince,
+        max: frame.observeAfterTokens,
       }));
       gaugeRows.push(renderGauge(html, {
         title: "P",
         key: "pool",
         threshold: "observationsPoolMaxTokens",
         why: "How full pi-blackhole's observation pool is. Observations wait there until compaction folds them into memory; a full pool means there is no room left to fold.",
-        value: gauges.pool,
-        max: gauges.observationsPoolMaxTokens,
+        value: frame.pool,
+        max: frame.observationsPoolMaxTokens,
       }));
     }
     gaugeRows.push(renderGauge(html, {
@@ -454,20 +531,21 @@ function renderStatusPanel(html) {
       key: "ctxTokens",
       threshold: "compactThreshold",
       why: "Context tokens since the last compaction — what the model is carrying right now. When this bar fills, pi-blackhole compacts and the count drops back down.",
-      value: gauges.ctxTokens,
-      max: gauges.compactThreshold,
+      value: frame.ctxTokens,
+      max: frame.compactThreshold,
     }));
   }
-  const frameAge = gaugeFrameAt ? Math.max(0, Math.round((Date.now() - gaugeFrameAt) / 1000)) : 0;
+  const liveAge = gaugeFrameAt ? Math.max(0, Math.round((Date.now() - gaugeFrameAt) / 1000)) : 0;
+  const cacheAge = cachedAt ? Math.max(0, Math.round((Date.now() - cachedAt) / 1000)) : 0;
   const workers = readout.on
-    ? (gauges?.workers || []).map((worker) => html`
+    ? (frame?.workers || []).map((worker) => html`
       <div class="pi-blackhole-worker">
         <span class="pi-blackhole-worker-state ${worker.kind === "running" ? "pi-blackhole-running" : "pi-blackhole-done"}">${worker.kind === "running" ? "running" : "done"}</span>
         <span class="pi-blackhole-worker-detail">${worker.type}${worker.kind === "done" && worker.delta != null ? ` — collected ${worker.delta}` : ""}${worker.note ? ` — ${worker.note}` : ""}</span>
       </div>
     `)
     : [];
-  const compactLeft = gauges ? Math.max(0, Number(gauges.compactThreshold) - Number(gauges.ctxTokens)) : 0;
+  const compactLeft = frame ? Math.max(0, Number(frame.compactThreshold) - Number(frame.ctxTokens)) : 0;
   return html`
     ${renderStatusStyles(html)}
     ${panelStyles(html)}
@@ -483,19 +561,29 @@ function renderStatusPanel(html) {
         <span class="pi-blackhole-meta-value pi-blackhole-mono">${gaugeStatus || "not opened"}</span>
         ${readout.on ? html`
           <span class="pi-blackhole-meta-key">Last frame</span>
-          <span class="pi-blackhole-meta-value pi-blackhole-mono">${gauges ? `${frameAge}s ago` : "none received yet"}</span>
+          <span class="pi-blackhole-meta-value pi-blackhole-mono">${gauges ? `${liveAge}s ago` : "none received yet on this page"}</span>
+          ${fromCache ? html`
+            <span class="pi-blackhole-meta-key">Cached reading</span>
+            <span class="pi-blackhole-meta-value pi-blackhole-mono">${humanAge(cacheAge)} ago — numbers from ${cachedSession}</span>
+          ` : null}
           <span class="pi-blackhole-meta-key">Observation memory</span>
           <span class="pi-blackhole-meta-value">${memoryOn ? "on — O and P bars are counted" : "off — pi-blackhole reports memoryOn: false, so O and P are not counted"}</span>
           <span class="pi-blackhole-meta-key">Last compaction</span>
-          <span class="pi-blackhole-meta-value">${gauges ? `${Number(gauges.ctxTokens)} tokens ago — ${compactLeft} before pi-blackhole's next one (compactThreshold ${Number(gauges.compactThreshold)})` : "no frame received yet"}</span>
+          <span class="pi-blackhole-meta-value">${frame ? `${Number(frame.ctxTokens)} tokens ago — ${compactLeft} before pi-blackhole's next one (compactThreshold ${Number(frame.compactThreshold)})` : "no frame received yet"}</span>
           <span class="pi-blackhole-meta-key">Observers</span>
           <span class="pi-blackhole-meta-value">${workers.length ? "see the rows below — each names what that stage collected" : "none in the last frame — pi-blackhole keeps a row only while a stage runs and until it settles"}</span>
         ` : null}
       </div>
+      ${readout.on && fromCache ? html`
+        <p class="pi-blackhole-cached">
+          These bars are the last frame pi-blackhole published for ${cachedSession}, kept by the plugin's server entry and read back after this page loaded.
+          Nothing here is live: the numbers are what pi-blackhole measured ${humanAge(cacheAge)} ago.
+        </p>
+      ` : null}
       <div class="pi-blackhole-gauges">${gaugeRows}</div>
-      ${readout.on && workers.length ? html`<p class="pi-blackhole-explain">Workers below are pi-blackhole's own runtime state, not this panel's guess. "collected N" is how many items that stage produced.</p>` : null}
+      ${readout.on ? workers.length ? html`<p class="pi-blackhole-explain">Workers below are pi-blackhole's own runtime state, not this panel's guess. "collected N" is how many items that stage produced.</p>` : null : null}
       ${readout.on ? workers : null}
-      ${readout.on ? (gauges ? null : html`<p class="pi-blackhole-empty">No frame has arrived yet — pi-blackhole publishes one when the hosted session starts, ends a turn, or compacts.</p>`) : renderStatusOff(html, readout)}
+      ${readout.on ? (frame ? null : html`<p class="pi-blackhole-empty">No frame has arrived yet — pi-blackhole publishes one when the hosted session starts, ends a turn, or compacts.</p>`) : renderStatusOff(html, readout)}
     </section>
   `;
 }
@@ -540,19 +628,21 @@ const plugin = {
           // own status readout switch. Same shared state, same guard, same transport —
           // this panel is not a second reader of pi-blackhole, it is the same read.
           render: (panel) => {
-            void loadSettings(panel);
-            openGaugesFor(panel);
+            refreshStatus(panel);
             return renderStatusPanel(context.html);
           },
           onInvalidate: (panel) => {
-            void loadSettings(panel);
-            openGaugesFor(panel);
+            refreshStatus(panel);
           },
         },
       ],
     },
     dispose: () => {
       closeGaugeChannel();
+      cachedFrame = null;
+      cachedAt = 0;
+      cachedSession = "";
+      cacheCheckedFor = "";
     },
   }),
 };
