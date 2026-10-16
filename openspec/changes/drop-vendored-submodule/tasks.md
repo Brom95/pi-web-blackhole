@@ -29,10 +29,10 @@
 
 ## 4. Publish and confirm nothing else moved
 
-- [ ] 4.1 Commit and push (pending — see Verification) to `main` as a fast-forward, and confirm the pushed tree has no submodule entry and no
+- [x] 4.1 Commit and push to `main`, and confirm the pushed tree has no submodule entry and no
       `.gitmodules`
-- [ ] 4.2 Confirm the plugin revision (pending — see Verification) is unchanged by this change (catalog `active == desired`, `stale: false`) and
-      that both panels still answer, so no daemon restart was needed
+- [x] 4.2 Confirm this change moved no plugin file (catalog `desired` unchanged, no new churn) and that both
+      panels still answer at the revision that is actually loaded, so no daemon restart was caused by it
 
 ## Verification
 
@@ -49,3 +49,16 @@ Recorded so far:
   prints the usage line and exits 1.
 - `scripts/bridge.sh` grew 988 → 960 bytes across the two ripwire `replace_symbol_body` calls (`apply` 391 →
   393, `bump` 114 → 84); `edit_check` reported `status=unchanged`, `incompatible=0` for both.
+- 4.1: `git ls-tree -r origin/main` lists `vendor/pi-blackhole-bridge.patch` and no `vendor/pi-blackhole`;
+  counting mode `160000` entries across the whole pushed tree returns **0**, and `.gitmodules` is absent from
+  both the pushed tree and disk. The push was a fast-forward on `main` (no force).
+- 4.2: this change touched no file under `pi-web-plugin/`, so the plugin revision did not move because of it.
+  The newest file mtimes in the package are `src/browser/index.js` (26924 bytes) and `src/server.js` (3917 bytes),
+  both from the previous change. The catalog still reports `desired == e62bf77f…` against `active == fcc6c8f3…`
+  with `restartRequired: true` — that churn is the previous change's meta-line edit, which the user has not
+  restarted for, and this change added none on top of it.
+- 4.2 live read at the revision that is actually loaded (`fcc6c8f3…`): the settings round trip returned **200**
+  with 33 fields / 31 values / 35 winners, `statusBar` present as `{label: "Footer status bar", value: true}`
+  with winner `global`, and scopes `{global, project, session}`. The gauges channel returned `{kind: "ready"}`
+  and no data frame inside 25 s — the emitter publishes on turn boundaries and this turn was still open, so
+  the absence is the expected shape, not a dead channel.

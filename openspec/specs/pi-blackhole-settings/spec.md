@@ -15,23 +15,22 @@ A browser extension that allows users to change pi-blackhole settings from the p
 - Invalid config values must be rejected before saving
 
 ### Requirement: Wrapper, not reimplementation
-The web plugin SHALL treat pi-blackhole as a separate, pinned component (a git
-submodule) and SHALL obtain the settings schema, the current values, the validation
-rules, the save path and the measured gauges from pi-blackhole itself. The plugin
-MUST NOT restate a setting key, an option list, a numeric range, or a config file
-path of its own.
+The web plugin SHALL treat pi-blackhole as a separate component that the user installs, and SHALL obtain the
+settings schema, the current values, the validation rules, the save path and the measured gauges from pi-blackhole
+itself. The plugin MUST NOT restate a setting key, an option list, a numeric range, or a config file path of its
+own, and MUST NOT carry a copy of pi-blackhole inside the plugin package.
 
 #### Scenario: Panel shows pi-blackhole's own schema
-- **WHEN** the settings panel is opened against a session whose pi-blackhole schema
-  has changed since the plugin was written
-- **THEN** the panel renders exactly the fields pi-blackhole reports, and no field
-  list, range, or path is baked into the plugin
+- **WHEN** the settings panel is opened against a session whose pi-blackhole schema has changed since the plugin
+  was written
+- **THEN** the panel renders exactly the fields pi-blackhole reports, and no field list, range, or path is baked
+  into the plugin
 
 #### Scenario: Upstream moves
-- **WHEN** the pinned pi-blackhole copy no longer matches the bridge that was derived
-  against it
-- **THEN** the bridge tooling refuses to build and names the pinned commit and the
-  patch that must be re-derived
+- **WHEN** the copy of pi-blackhole the bridge is being applied to no longer matches the bridge derived against
+  it
+- **THEN** the bridge tooling refuses to build, names the commit it was checked against, and states that the patch
+  must be re-derived
 
 ### Requirement: Settings panel renders every reported field
 The settings panel SHALL render one control per field pi-blackhole reports, choosing
@@ -215,6 +214,18 @@ row.
 - **WHEN** pi-blackhole's payload carries no such row
 - **THEN** the meta block states nothing about terminal surfaces and the remaining rows render
   unchanged
+
+### Requirement: The upstream copy the bridge patches is supplied, not shipped
+The repository SHALL NOT carry a pinned copy of pi-blackhole, and SHALL carry the bridge patch plus the version
+and commit the patch was derived against, so a reader can rebuild the bridge against a copy they fetched.
+
+#### Scenario: A clone carries no vendored tree
+- **WHEN** the repository is cloned
+- **THEN** no copy of pi-blackhole is fetched with it, and the bridge patch is present
+
+#### Scenario: Provenance is readable
+- **WHEN** a reader wants to know which pi-blackhole the published bridge was written against
+- **THEN** the patch and the README name the upstream version and commit, without requiring a submodule pin
 
 ## Scenarios
 
