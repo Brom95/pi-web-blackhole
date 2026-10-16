@@ -3,3 +3,4 @@ node_modules/
 .pi/tasks/
 *.output
 .pi-web/
+vendor/pi-blackhole/
